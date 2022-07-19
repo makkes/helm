@@ -16,6 +16,7 @@ type HelmClientBase struct {
 }
 
 type Builder interface {
+	WithAuthenticationMethodBasicAuth(username, password string) Builder
 	WithAuthenticationMethodClientCerts(certFile, keyFile, caFile string) Builder
 	WithInsecureSkipVerifyTLS(insecureSkipVerifyTLS bool) Builder
 	Build() (HelmClient, error)

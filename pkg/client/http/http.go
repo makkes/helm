@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 
 	"helm.sh/helm/v3/pkg/client"
@@ -13,23 +14,25 @@ import (
 
 type HTTPHelmClient struct {
 	client.HelmClientBase
-	repoURL    string
+	repoURL    url.URL
 	idxEntries map[string]repo.ChartVersions
+	username   string
+	password   string
 }
 
 var _ client.HelmClient = &HTTPHelmClient{}
 
 type HTTPHelmClientBuilder struct {
-	c *HTTPHelmClient
+	c       *HTTPHelmClient
+	repoURL string
 }
 
 var _ client.Builder = &HTTPHelmClientBuilder{}
 
-func NewHTTPHelmClientBuilder(repoURL string) *HTTPHelmClientBuilder {
+func NewHTTPHelmClientBuilder(repoURL string) client.Builder {
 	return &HTTPHelmClientBuilder{
-		c: &HTTPHelmClient{
-			repoURL: repoURL,
-		},
+		repoURL: repoURL,
+		c:       &HTTPHelmClient{},
 	}
 }
 
@@ -45,7 +48,19 @@ func (b *HTTPHelmClientBuilder) WithInsecureSkipVerifyTLS(insecureSkipVerifyTLS 
 	return b
 }
 
+func (b *HTTPHelmClientBuilder) WithAuthenticationMethodBasicAuth(username, password string) client.Builder {
+	b.c.username = username
+	b.c.password = password
+	return b
+}
+
 func (b *HTTPHelmClientBuilder) Build() (client.HelmClient, error) {
+	baseURL, err := url.Parse(b.repoURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed parsing repo URL: %w", err)
+	}
+	b.c.repoURL = *baseURL
+
 	return b.c, nil
 }
 
@@ -62,7 +77,16 @@ func (c HTTPHelmClient) GetChart(chartName string, chartVersion string) (*bytes.
 
 	for _, v := range idxVersions {
 		if v.Version == chartVersion {
-			resp, err := http.Get(v.URLs[0])
+			if len(v.URLs) <= 0 {
+				return nil, fmt.Errorf("index file contains no URL for the requested chart version %s", chartVersion)
+			}
+			chartURL, err := url.Parse(v.URLs[0])
+			if err != nil {
+				return nil, fmt.Errorf("chart URL from index file is invalid: %w", err)
+			}
+			chartURL = c.repoURL.ResolveReference(chartURL)
+
+			resp, err := http.Get(chartURL.String())
 			if err != nil {
 				return nil, fmt.Errorf("failed downloading chart file: %w", err)
 			}
@@ -103,9 +127,20 @@ func (c *HTTPHelmClient) loadIndexFile() error {
 	}
 	defer os.Remove(file.Name())
 
-	resp, err := http.Get(fmt.Sprintf("%s/index.yaml", c.repoURL))
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("%s/index.yaml", c.repoURL.String()), nil)
+	if c.username != "" && c.password != "" {
+		req.SetBasicAuth(c.username, c.password)
+	}
+
+	if err != nil {
+		return fmt.Errorf("failed constructing HTTP request to download index file: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("failed downloading index file: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("failed downloading index file, unexpected HTTP status %d", resp.StatusCode)
 	}
 
 	n, err := io.Copy(file, resp.Body)

@@ -13,6 +13,7 @@ type OCIHelmClient struct {
 	client.HelmClientBase
 	registryURL    string
 	registryClient *registry.Client
+	loginOpts      []registry.LoginOption
 }
 
 var _ client.HelmClient = &OCIHelmClient{}
@@ -23,7 +24,7 @@ type OCIHelmClientBuilder struct {
 
 var _ client.Builder = &OCIHelmClientBuilder{}
 
-func NewOCIHelmClientBuilder(registryURL string) *OCIHelmClientBuilder {
+func NewOCIHelmClientBuilder(registryURL string) client.Builder {
 	return &OCIHelmClientBuilder{
 		c: &OCIHelmClient{
 			registryURL: registryURL,
@@ -43,6 +44,11 @@ func (b *OCIHelmClientBuilder) WithInsecureSkipVerifyTLS(insecureSkipVerifyTLS b
 	return b
 }
 
+func (b *OCIHelmClientBuilder) WithAuthenticationMethodBasicAuth(username, password string) client.Builder {
+	b.c.loginOpts = []registry.LoginOption{registry.LoginOptBasicAuth(username, password)}
+	return b
+}
+
 func (b *OCIHelmClientBuilder) Build() (client.HelmClient, error) {
 	regClient, err := registry.NewClient(
 		registry.ClientOptWriter(io.Discard),
@@ -52,6 +58,10 @@ func (b *OCIHelmClientBuilder) Build() (client.HelmClient, error) {
 		return nil, fmt.Errorf("failed creating client: %w", err)
 	}
 	b.c.registryClient = regClient
+
+	if err := regClient.Login(b.c.registryURL, b.c.loginOpts...); err != nil {
+		return nil, fmt.Errorf("failed logging into registry: %w", err)
+	}
 
 	return b.c, nil
 }
